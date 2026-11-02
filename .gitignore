@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+.pytest_cache/
+dist/
+*.egg-info/
+install.log
+
+# Household-specific files: real allowlist and env (templates are *.example*)
+deploy/ha_allowlist.json
+mcp.env
+secrets.env
+*.env
+!deploy/mcp.env.example
+
+.DS_Store

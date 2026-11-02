@@ -1,0 +1,30 @@
+[project]
+name = "familia-mcp"
+version = "0.2.0"
+description = "familIA home MCP server (Prometheus, Home Assistant, Plex, PhotoPrism). Runs over stdio, spawned through a restricted SSH key."
+license = "GPL-3.0-only"
+requires-python = ">=3.11"
+# Pinned: mcp 2.x changed its public API (FastMCP -> MCPServer). The proxy on
+# the OVOS Pi must use the same mcp version (see scripts/requirements-proxy.txt).
+dependencies = [
+  "mcp==2.3.0",
+  "httpx==0.28.1",
+]
+
+[project.scripts]
+familia-mcp = "familia_mcp.__main__:main"
+
+[dependency-groups]
+dev = [
+  "pytest==9.2.0",
+]
+
+[build-system]
+requires = ["hatchling==1.33.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/familia_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

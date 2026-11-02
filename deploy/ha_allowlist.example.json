@@ -1,0 +1,13 @@
+{
+  "allow": [
+    { "entity_id": "light.*" },
+    { "entity_id": "switch.enchufe_*" },
+    {
+      "entity_id": "switch.enchufe_nas",
+      "confirm": true,
+      "actions": ["turn_on", "turn_off"],
+      "aliases": ["servidor"]
+    }
+  ],
+  "deny": ["switch.enchufe_router"]
+}
