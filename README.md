@@ -1,7 +1,10 @@
-# familia-mcp
+# home-mcp
 
 Home MCP server for the [familIA](https://github.com/mahdsip/familIA) voice assistant. One process, four optional
 modules; each is enabled only when its settings are present.
+
+The Python package and the installed command are still named `familia-mcp` (`familia_mcp`): the deployed host
+(`/opt/familia-mcp`, the `familia-mcp` service user) and the familIA proxy's forced SSH command rely on that name.
 
 | Module | Tools | Access |
 |---|---|---|
