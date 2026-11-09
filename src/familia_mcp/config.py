@@ -149,6 +149,73 @@ class PhotosConfig:
         return cls(url=url, token=token, timeout_s=float(env.get("PHOTOPRISM_TIMEOUT_S") or 45.0))
 
 
+def host_timezone() -> str:
+    """IANA name of the host's time zone (Debian: /etc/timezone or the
+    /etc/localtime symlink). UTC only if neither is available."""
+    try:
+        name = Path("/etc/timezone").read_text(encoding="utf-8").strip()
+        if name:
+            return name
+    except OSError:
+        pass
+    try:
+        target = os.readlink("/etc/localtime")
+        if "zoneinfo/" in target:
+            return target.split("zoneinfo/", 1)[1]
+    except OSError:
+        pass
+    return "UTC"
+
+
+def _csv(raw: str | None) -> tuple[str, ...]:
+    return tuple(p.strip() for p in (raw or "").split(",") if p.strip())
+
+
+@dataclass(frozen=True)
+class NextcloudConfig:
+    """Nextcloud calendars, tasks (CalDAV) and contacts (CardDAV)."""
+
+    url: str
+    user: str
+    app_password: str
+    timezone: str
+    cert_file: str | None = None        # pinned self-signed certificate (PEM)
+    calendars: tuple[str, ...] = ()     # display names to expose; empty = all writable ones
+    default_calendar: str | None = None
+    default_tasklist: str | None = None
+    addressbook: str = "contacts"       # Nextcloud's default address book URI
+    timeout_s: float = 10.0
+    confirm_ttl_s: float = 90.0
+
+    @classmethod
+    def from_env(cls, env: dict[str, str]) -> "NextcloudConfig | None":
+        url = (env.get("NEXTCLOUD_URL") or "").strip().rstrip("/")
+        user = (env.get("NEXTCLOUD_USER") or "").strip()
+        password = (env.get("NEXTCLOUD_APP_PASSWORD") or "").strip()
+        if not url or not user or not password:
+            return None
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("NEXTCLOUD_URL must start with http:// or https://")
+        if not re.fullmatch(r"[A-Za-z0-9._@-]+", user):
+            raise ValueError("NEXTCLOUD_USER has unexpected characters")
+        cert = (env.get("NEXTCLOUD_CERT_FILE") or "").strip() or None
+        if cert and not Path(cert).is_file():
+            raise ValueError(f"NEXTCLOUD_CERT_FILE {cert} does not exist")
+        tz = (env.get("NEXTCLOUD_TIMEZONE") or "").strip() or host_timezone()
+        return cls(
+            url=url,
+            user=user,
+            app_password=password,
+            timezone=tz,
+            cert_file=cert,
+            calendars=_csv(env.get("NEXTCLOUD_CALENDARS")),
+            default_calendar=(env.get("NEXTCLOUD_DEFAULT_CALENDAR") or "").strip() or None,
+            default_tasklist=(env.get("NEXTCLOUD_DEFAULT_TASKLIST") or "").strip() or None,
+            addressbook=(env.get("NEXTCLOUD_ADDRESSBOOK") or "contacts").strip(),
+            timeout_s=float(env.get("NEXTCLOUD_TIMEOUT_S") or 10.0),
+        )
+
+
 DEFAULT_HA_ALLOWLIST = "/etc/familia/ha_allowlist.json"
 
 

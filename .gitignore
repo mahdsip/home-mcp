@@ -5,8 +5,9 @@ dist/
 *.egg-info/
 install.log
 
-# Household-specific files: real allowlist and env (templates are *.example*)
+# Household-specific files: real allowlist, env and pinned certs (templates are *.example*)
 deploy/ha_allowlist.json
+*.pem
 mcp.env
 secrets.env
 *.env

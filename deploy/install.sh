@@ -77,6 +77,12 @@ if [ -f "$SRC/ha_allowlist.json" ]; then
   install -o "$SVC_USER" -g "$SVC_USER" -m 640 "$SRC/ha_allowlist.json" "$ETC/ha_allowlist.json"
   echo "installed $ETC/ha_allowlist.json (previous one kept as .bak-*)"
 fi
+if [ -f "$SRC/nextcloud.pem" ]; then
+  # Pinned self-signed Nextcloud certificate (public, but must not be swappable by the service user).
+  openssl x509 -in "$SRC/nextcloud.pem" -noout -fingerprint -sha256
+  install -o root -g "$SVC_USER" -m 644 "$SRC/nextcloud.pem" "$ETC/nextcloud.pem"
+  echo "installed $ETC/nextcloud.pem"
+fi
 if [ -f "$SRC/secrets.env" ]; then
   # Merge KEY=VALUE lines into mcp.env: replace existing keys, append new ones.
   # Only known keys; values are checked, never printed.
@@ -84,9 +90,15 @@ if [ -f "$SRC/secrets.env" ]; then
 import re, sys
 from familia_mcp.config import load_env_file
 ALLOWED = {"HA_TOKEN", "PLEX_URL", "PLEX_TOKEN", "PLEX_USER_TOKENS", "PHOTOPRISM_URL", "PHOTOPRISM_TOKEN",
-           "PROMETHEUS_BEARER_TOKEN", "PROMETHEUS_PASSWORD"}
+           "PROMETHEUS_BEARER_TOKEN", "PROMETHEUS_PASSWORD",
+           "NEXTCLOUD_URL", "NEXTCLOUD_USER", "NEXTCLOUD_APP_PASSWORD", "NEXTCLOUD_CERT_FILE",
+           "NEXTCLOUD_CALENDARS", "NEXTCLOUD_DEFAULT_CALENDAR", "NEXTCLOUD_DEFAULT_TASKLIST",
+           "NEXTCLOUD_ADDRESSBOOK", "NEXTCLOUD_TIMEZONE"}
 new = load_env_file(sys.argv[1])
-bad = sorted(set(new) - ALLOWED) + sorted(k for k, v in new.items() if not re.fullmatch(r"[A-Za-z0-9._:/=;-]+", v))
+# Calendar names may contain spaces and accents; everything else is a token or URL.
+FREE_TEXT = {"NEXTCLOUD_CALENDARS", "NEXTCLOUD_DEFAULT_CALENDAR", "NEXTCLOUD_DEFAULT_TASKLIST"}
+ok = lambda k, v: re.fullmatch(r"[^\n\r\"'`$\\]+" if k in FREE_TEXT else r"[A-Za-z0-9._:/=;@+-]+", v)  # noqa: E731
+bad = sorted(set(new) - ALLOWED) + sorted(k for k, v in new.items() if not ok(k, v))
 if bad:
     sys.exit(f"secrets.env rejected (unknown key or unexpected characters): {', '.join(bad)}")
 lines, done = [], set()
@@ -174,6 +186,12 @@ async def main():
                 out = payload(r)
                 print(f"plex continue watching ({acc or 'owner'}):", "ERROR " + str(out) if r.is_error
                       else f"{out.get('count')} items")
+        if "nc_calendars" in names:  # read-only check; nothing is written during install
+            r = await c.call_tool("nc_calendars", {})
+            out = payload(r)
+            print("nextcloud:", "ERROR " + str(out) if r.is_error else
+                  f"calendars={[x['name'] for x in out.get('calendars', [])]} "
+                  f"task_lists={[x['name'] for x in out.get('task_lists', [])]}")
         if "photos_people" in names:
             r = await c.call_tool("photos_people", {})
             out = payload(r)

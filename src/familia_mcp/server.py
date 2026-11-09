@@ -12,8 +12,9 @@ from typing import Any
 import httpx
 from mcp.server.mcpserver import MCPServer
 
-from . import __version__, homeassistant, photos, plex, prometheus
-from .config import HomeAssistantConfig, PhotosConfig, PlexConfig, PrometheusConfig, resolve_env
+from . import __version__, homeassistant, nextcloud, photos, plex, prometheus
+from .config import (HomeAssistantConfig, NextcloudConfig, PhotosConfig, PlexConfig, PrometheusConfig,
+                     resolve_env)
 
 logger = logging.getLogger("familia_mcp")
 
@@ -30,6 +31,8 @@ def build_server(
     homeassistant_transport: httpx.AsyncBaseTransport | None = None,
     plex_transport: httpx.AsyncBaseTransport | None = None,
     photos_target: Any = None,
+    nextcloud_transport: httpx.AsyncBaseTransport | None = None,
+    nextcloud_now: Any = None,
 ) -> MCPServer:
     """Create the server. `environ`, the transports and `photos_target` (an
     MCP server standing in for PhotoPrism's) are injectable for tests."""
@@ -72,6 +75,16 @@ def build_server(
         enabled.append("photos")
     elif env.get("PHOTOPRISM_URL") or env.get("PHOTOPRISM_TOKEN"):
         logger.warning("Photos disabled: set both PHOTOPRISM_URL and PHOTOPRISM_TOKEN")
+
+    nc_cfg = NextcloudConfig.from_env(env)
+    if nc_cfg:
+        nextcloud.register(
+            server,
+            nextcloud.Nextcloud(nextcloud.DavClient(nc_cfg, transport=nextcloud_transport), nc_cfg, now=nextcloud_now),
+        )
+        enabled.append("nextcloud")
+    elif env.get("NEXTCLOUD_URL") or env.get("NEXTCLOUD_APP_PASSWORD"):
+        logger.warning("Nextcloud disabled: set NEXTCLOUD_URL, NEXTCLOUD_USER and NEXTCLOUD_APP_PASSWORD")
 
     if enabled:
         logger.info("familia-mcp modules enabled: %s", ", ".join(enabled))

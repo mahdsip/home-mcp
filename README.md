@@ -1,6 +1,6 @@
 # home-mcp
 
-Home MCP server for the [familIA](https://github.com/mahdsip/familIA) voice assistant. One process, four optional
+Home MCP server for the [familIA](https://github.com/mahdsip/familIA) voice assistant. One process, five optional
 modules; each is enabled only when its settings are present.
 
 The Python package and the installed command are still named `familia-mcp` (`familia_mcp`): the deployed host
@@ -12,6 +12,7 @@ The Python package and the installed command are still named `familia-mcp` (`fam
 | Home Assistant | `ha_list_devices`, `ha_device_state`, `ha_device_history`, `ha_control` | lights and plugs in an allowlist |
 | Plex | `plex_search`, `plex_recently_added`, `plex_continue_watching`, `plex_watch_history`, `plex_now_playing` | read-only |
 | Photos (PhotoPrism) | `photos_search`, `photos_albums`, `photos_people`, `photos_on_this_day` | read-only |
+| Nextcloud | `nc_calendars`, `nc_agenda`, `nc_tasks`, `nc_add_task`, `nc_complete_task`, `nc_create_event`, `nc_find_contact`, `nc_add_contact` | read + create; events and contacts after a spoken "yes" |
 
 ## How it runs
 
@@ -36,6 +37,13 @@ services directly; the proxy runs the tool here and sends back the result.
   of paths. "Continue watching" for Plex Home users uses each user's own token and never falls back to the owner's.
 - **Photos**: a thin client of PhotoPrism's built-in read-only MCP endpoint (`/api/v1/mcp`). Use an app password
   with scope `mcp read photos albums people labels`; without `places` no coordinates are ever returned.
+- **Nextcloud**: CalDAV/CardDAV with a dedicated app password (Nextcloud cannot scope those, so the client is the
+  boundary): only `PROPFIND`, `REPORT` and `PUT`, only below the user's calendar and address book homes, and every
+  `PUT` is conditional: `If-None-Match: *` to create, `If-Match: <etag>` to mark a task done, so a change made
+  meanwhile on a phone is never overwritten. Nothing is ever deleted. Tasks are written directly; appointments and
+  contacts are parked and written by the internal `nc_confirm_action` after a spoken "yes" (the read-back catches
+  speech-recognition mistakes in times and phone numbers). Events never get attendees, so no invitation emails.
+  A self-signed server certificate is pinned (`NEXTCLOUD_CERT_FILE`) instead of disabling TLS verification.
 - Tokens live only in `/etc/familia/mcp.env` on the MCP host (mode 600, owned by the service user).
 
 ## Install / upgrade (Raspberry Pi OS, Python 3.11+)
@@ -74,6 +82,7 @@ see `deploy/mcp.env.example`.
 | Home Assistant | `HA_URL`, `HA_TOKEN` | `HA_ALLOWLIST_FILE`, `HA_TIMEOUT_S` |
 | Plex | `PLEX_URL`, `PLEX_TOKEN` | `PLEX_USER_TOKENS=Kids=<token>;...`, `PLEX_TIMEOUT_S` |
 | Photos | `PHOTOPRISM_URL`, `PHOTOPRISM_TOKEN` | `PHOTOPRISM_TIMEOUT_S` |
+| Nextcloud | `NEXTCLOUD_URL`, `NEXTCLOUD_USER`, `NEXTCLOUD_APP_PASSWORD` | `NEXTCLOUD_CERT_FILE`, `NEXTCLOUD_CALENDARS`, `NEXTCLOUD_DEFAULT_CALENDAR`, `NEXTCLOUD_DEFAULT_TASKLIST`, `NEXTCLOUD_ADDRESSBOOK`, `NEXTCLOUD_TIMEZONE` |
 
 ## Development
 

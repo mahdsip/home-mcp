@@ -5,4 +5,4 @@ PhotoPrism). A module is enabled only when its configuration is present, so
 the same binary serves whatever the household has.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
