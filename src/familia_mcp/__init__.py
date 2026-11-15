@@ -1,8 +1,9 @@
 """familIA home MCP server.
 
 One process, several optional modules (Prometheus, Home Assistant, Plex,
-PhotoPrism). A module is enabled only when its configuration is present, so
+PhotoPrism, Nextcloud,
+location history). A module is enabled only when its configuration is present, so
 the same binary serves whatever the household has.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

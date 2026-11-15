@@ -1,6 +1,6 @@
 # home-mcp
 
-Home MCP server for the [familIA](https://github.com/mahdsip/familIA) voice assistant. One process, five optional
+Home MCP server for the [familIA](https://github.com/mahdsip/familIA) voice assistant. One process, six optional
 modules; each is enabled only when its settings are present.
 
 The Python package and the installed command are still named `familia-mcp` (`familia_mcp`): the deployed host
@@ -13,6 +13,7 @@ The Python package and the installed command are still named `familia-mcp` (`fam
 | Plex | `plex_search`, `plex_recently_added`, `plex_continue_watching`, `plex_watch_history`, `plex_now_playing` | read-only |
 | Photos (PhotoPrism) | `photos_search`, `photos_albums`, `photos_people`, `photos_on_this_day` | read-only |
 | Nextcloud | `nc_calendars`, `nc_agenda`, `nc_tasks`, `nc_add_task`, `nc_complete_task`, `nc_create_event`, `nc_find_contact`, `nc_add_contact` | read + create; events and contacts after a spoken "yes" |
+| Locations | `loc_was_i_at`, `loc_where_was_i`, `loc_list_trips`, `loc_trip_summary`, `loc_runs_near`, `loc_chargers_near` | read-only (Nextcloud files + Nominatim) |
 
 ## How it runs
 
@@ -44,6 +45,9 @@ services directly; the proxy runs the tool here and sends back the result.
   contacts are parked and written by the internal `nc_confirm_action` after a spoken "yes" (the read-back catches
   speech-recognition mistakes in times and phone numbers). Events never get attendees, so no invitation emails.
   A self-signed server certificate is pinned (`NEXTCLOUD_CERT_FILE`) instead of disabling TLS verification.
+- **Locations**: the same app password, but the files client only sends `PROPFIND` and `GET`, only below
+  `PHONETRACK_ROOT` (paths with `..` are refused), files over 25 MB are skipped. The index is mode 600 (umask 077
+  covers SQLite's `-wal`/`-shm` files). Coordinates only leave the house towards Nominatim (see below).
 - Tokens live only in `/etc/familia/mcp.env` on the MCP host (mode 600, owned by the service user).
 
 ## Install / upgrade (Raspberry Pi OS, Python 3.11+)
@@ -83,6 +87,44 @@ see `deploy/mcp.env.example`.
 | Plex | `PLEX_URL`, `PLEX_TOKEN` | `PLEX_USER_TOKENS=Kids=<token>;...`, `PLEX_TIMEOUT_S` |
 | Photos | `PHOTOPRISM_URL`, `PHOTOPRISM_TOKEN` | `PHOTOPRISM_TIMEOUT_S` |
 | Nextcloud | `NEXTCLOUD_URL`, `NEXTCLOUD_USER`, `NEXTCLOUD_APP_PASSWORD` | `NEXTCLOUD_CERT_FILE`, `NEXTCLOUD_CALENDARS`, `NEXTCLOUD_DEFAULT_CALENDAR`, `NEXTCLOUD_DEFAULT_TASKLIST`, `NEXTCLOUD_ADDRESSBOOK`, `NEXTCLOUD_TIMEZONE` |
+| Locations | `PHONETRACK_ROOT` + the Nextcloud settings | `PHONETRACK_DAILY_FOLDER`, `PHONETRACK_SPORT_FOLDER`, `PHONETRACK_CHARGERS_FOLDER`, `PHONETRACK_DB`, `PHONETRACK_SYNC_INTERVAL_S`, `PHONETRACK_SYNC_BUDGET_S`, `NOMINATIM_URL`, `NOMINATIM_EMAIL`, `NOMINATIM_LANGUAGE` |
+
+### Location history
+
+Answers "¿pasé por la Gran Vía el 10 de noviembre?", "¿estuve en Segovia el 8?", "¿por dónde pasamos en el
+viaje a Galicia?", "¿he corrido alguna vez por el Retiro?" and "¿qué cargadores hay cerca de Mérida?" from a
+Nextcloud folder (`PHONETRACK_ROOT`, e.g. `Maps`):
+
+| Folder | Content | Used by |
+|---|---|---|
+| `daily/` | PhoneTrack daily GPX exports (timed fixes, UTC) | `loc_was_i_at`, `loc_where_was_i` |
+| any other | one trip per folder; dates in the folder name (`2023_08_07-14_Galicia` = 7 to 14 Aug, `2014_09_California` = the month, `2022_07_02_X` = that day) | all `loc_*` except runs/chargers |
+| `SportTracker/` | Sports Tracker sessions | `loc_runs_near` only |
+| `Cargadores/` | EV chargers as GPX waypoints | `loc_chargers_near` only |
+
+- **Index.** Files are copied into SQLite (`PHONETRACK_DB`, mode 600, in a mode-700 directory because SQLite
+  writes `-wal`/`-shm` files next to it). Build it once on the MCP host (a few minutes for ~1,200 files):
+  `sudo -u familia-mcp /opt/familia-mcp/venv/bin/familia-mcp --sync-locations`. Tool calls then refresh it at
+  most every `PHONETRACK_SYNC_INTERVAL_S`; Nextcloud folder ETags make an unchanged tree cost one `PROPFIND`.
+- **Time budget.** The familIA proxy allows 20 s per tool call. A call waits at most `PHONETRACK_SYNC_BUDGET_S`
+  (6 s, enough for the newest daily file) for the refresh, which then finishes in the background, and stops
+  Nominatim lookups (1 per second) at `PHONETRACK_TOOL_BUDGET_S` (15 s), marking the answer truncated. A broken
+  index disables only this module.
+- **Local day and time** come from each fix's own coordinates (offline, `tzfpy`), so a day in California is
+  California's day.
+- **Dates of untimed files** (planned routes, tracks, marked places): the file name, else the folder name. A
+  file-name date must fit the folder's range or year, which resolves `22_07_02` vs `2_7_22` and ignores export
+  dates like `GraphHopper-Track-2023-08-05` in a 2019 trip.
+- **Matching.** Areas (towns, parks): inside the boundary, or the straight line between two consecutive fixes
+  (at most 2 h apart) crosses it. Streets and points of interest: within 50 m plus the fix's accuracy. A street
+  is every OSM way with that name nearby, not just the first.
+- **Evidence.** Each answer says what it rests on: `gps`, `gps_path` (between two fixes), `track`,
+  `planned_route` or `marked_place`; only the first two prove presence. Days without any fix are reported as
+  `days_without_gps_data`, distinct from "not there".
+- **Privacy.** Nominatim (OpenStreetMap) turns names into shapes and, for day and trip summaries, coordinates
+  into names, so the public instance sees those coordinates. Results are cached forever; requests are limited
+  to one per second with an identifying User-Agent, per its usage policy. Set `NOMINATIM_URL` to a
+  self-hosted instance to keep coordinates at home.
 
 ## Development
 

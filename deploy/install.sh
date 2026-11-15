@@ -93,7 +93,9 @@ ALLOWED = {"HA_TOKEN", "PLEX_URL", "PLEX_TOKEN", "PLEX_USER_TOKENS", "PHOTOPRISM
            "PROMETHEUS_BEARER_TOKEN", "PROMETHEUS_PASSWORD",
            "NEXTCLOUD_URL", "NEXTCLOUD_USER", "NEXTCLOUD_APP_PASSWORD", "NEXTCLOUD_CERT_FILE",
            "NEXTCLOUD_CALENDARS", "NEXTCLOUD_DEFAULT_CALENDAR", "NEXTCLOUD_DEFAULT_TASKLIST",
-           "NEXTCLOUD_ADDRESSBOOK", "NEXTCLOUD_TIMEZONE"}
+           "NEXTCLOUD_ADDRESSBOOK", "NEXTCLOUD_TIMEZONE",
+           "PHONETRACK_ROOT", "PHONETRACK_DAILY_FOLDER", "PHONETRACK_SPORT_FOLDER", "PHONETRACK_CHARGERS_FOLDER",
+           "NOMINATIM_EMAIL", "NOMINATIM_LANGUAGE"}
 new = load_env_file(sys.argv[1])
 # Calendar names may contain spaces and accents; everything else is a token or URL.
 FREE_TEXT = {"NEXTCLOUD_CALENDARS", "NEXTCLOUD_DEFAULT_CALENDAR", "NEXTCLOUD_DEFAULT_TASKLIST"}
@@ -142,7 +144,15 @@ else
   echo "not a terminal: skipped"
 fi
 
-echo "== 5. verification (as $SVC_USER)"
+echo "== 5. location index"
+if grep -q '^PHONETRACK_ROOT=..*' "$ETC/mcp.env"; then
+  # First run reads every file (minutes); later runs only fetch what changed.
+  (cd / && sudo -u "$SVC_USER" "$APP/venv/bin/familia-mcp" --sync-locations) \
+    || echo "location sync reported errors (see above); tools answer from what was indexed"
+else
+  echo "PHONETRACK_ROOT not set: locations module disabled"
+fi
+echo "== 6. verification (as $SVC_USER)"
 cd /  # the service user cannot read the sudo user's home
 sudo -u "$SVC_USER" "$APP/venv/bin/python" - <<'PY'
 import asyncio, json
@@ -192,6 +202,10 @@ async def main():
             print("nextcloud:", "ERROR " + str(out) if r.is_error else
                   f"calendars={[x['name'] for x in out.get('calendars', [])]} "
                   f"task_lists={[x['name'] for x in out.get('task_lists', [])]}")
+        if "loc_list_trips" in names:
+            r = await c.call_tool("loc_list_trips", {})
+            out = payload(r)
+            print("locations:", "ERROR " + str(out) if r.is_error else f"{out.get('count')} trips indexed")
         if "photos_people" in names:
             r = await c.call_tool("photos_people", {})
             out = payload(r)

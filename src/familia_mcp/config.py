@@ -216,6 +216,69 @@ class NextcloudConfig:
         )
 
 
+# In its own directory (mode 700): SQLite creates -wal/-shm files next to the database.
+DEFAULT_LOCATIONS_DB = "/var/lib/familia-mcp/locations/phonetrack.sqlite"
+_FOLDER_NAME_RE = re.compile(r"^[^/\\]+$")
+
+
+def _folder(env: dict[str, str], key: str, default: str) -> str:
+    value = (env.get(key) or default).strip().strip("/")
+    if not _FOLDER_NAME_RE.match(value) or value in (".", ".."):
+        raise ValueError(f"{key} must be a single folder name")
+    return value
+
+
+@dataclass(frozen=True)
+class LocationsConfig:
+    """Location history (PhoneTrack daily GPX, trips, sport sessions, chargers)
+    read from a Nextcloud folder over WebDAV, indexed locally in SQLite."""
+
+    nextcloud: NextcloudConfig
+    root: str                              # folder in the user's files, e.g. "Maps"
+    daily_folder: str = "daily"
+    sport_folder: str = "SportTracker"
+    chargers_folder: str = "Cargadores"
+    db_path: str = DEFAULT_LOCATIONS_DB
+    nominatim_url: str = "https://nominatim.openstreetmap.org"
+    nominatim_email: str | None = None     # sent as `email=` per Nominatim's usage policy
+    nominatim_language: str | None = None  # Accept-Language for place names; default: local names
+    sync_interval_s: float = 900.0
+    # The familIA proxy gives a tool call 20 s: sync inline for a few seconds (enough for
+    # the newest daily file), continue in the background, and cap the Nominatim lookups.
+    sync_budget_s: float = 6.0             # max seconds a tool call waits for the sync
+    tool_budget_s: float = 15.0            # max seconds a tool call spends in total
+    timeout_s: float = 20.0
+
+    @classmethod
+    def from_env(cls, env: dict[str, str]) -> "LocationsConfig | None":
+        raw_root = (env.get("PHONETRACK_ROOT") or "").strip().strip("/")
+        if not raw_root:
+            return None
+        nc = NextcloudConfig.from_env(env)
+        if nc is None:
+            return None  # the caller logs it
+        if any(part in ("", ".", "..") for part in raw_root.split("/")):
+            raise ValueError("PHONETRACK_ROOT must be a folder path like 'Maps'")
+        url = (env.get("NOMINATIM_URL") or cls.nominatim_url).strip().rstrip("/")
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("NOMINATIM_URL must start with http:// or https://")
+        return cls(
+            nextcloud=nc,
+            root=raw_root,
+            daily_folder=_folder(env, "PHONETRACK_DAILY_FOLDER", "daily"),
+            sport_folder=_folder(env, "PHONETRACK_SPORT_FOLDER", "SportTracker"),
+            chargers_folder=_folder(env, "PHONETRACK_CHARGERS_FOLDER", "Cargadores"),
+            db_path=(env.get("PHONETRACK_DB") or DEFAULT_LOCATIONS_DB).strip(),
+            nominatim_url=url,
+            nominatim_email=(env.get("NOMINATIM_EMAIL") or "").strip() or None,
+            nominatim_language=(env.get("NOMINATIM_LANGUAGE") or "").strip() or None,
+            sync_interval_s=float(env.get("PHONETRACK_SYNC_INTERVAL_S") or 900.0),
+            sync_budget_s=float(env.get("PHONETRACK_SYNC_BUDGET_S") or 6.0),
+            tool_budget_s=float(env.get("PHONETRACK_TOOL_BUDGET_S") or 15.0),
+            timeout_s=float(env.get("PHONETRACK_TIMEOUT_S") or 20.0),
+        )
+
+
 DEFAULT_HA_ALLOWLIST = "/etc/familia/ha_allowlist.json"
 
 

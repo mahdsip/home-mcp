@@ -7,14 +7,15 @@ Each module registers its tools only when configured, so a household without
 from __future__ import annotations
 
 import logging
+import sqlite3
 from typing import Any
 
 import httpx
 from mcp.server.mcpserver import MCPServer
 
-from . import __version__, homeassistant, nextcloud, photos, plex, prometheus
-from .config import (HomeAssistantConfig, NextcloudConfig, PhotosConfig, PlexConfig, PrometheusConfig,
-                     resolve_env)
+from . import __version__, homeassistant, nextcloud, phonetrack, photos, plex, prometheus
+from .config import (HomeAssistantConfig, LocationsConfig, NextcloudConfig, PhotosConfig, PlexConfig,
+                     PrometheusConfig, resolve_env)
 
 logger = logging.getLogger("familia_mcp")
 
@@ -33,6 +34,8 @@ def build_server(
     photos_target: Any = None,
     nextcloud_transport: httpx.AsyncBaseTransport | None = None,
     nextcloud_now: Any = None,
+    locations_transport: httpx.AsyncBaseTransport | None = None,
+    nominatim_transport: httpx.AsyncBaseTransport | None = None,
 ) -> MCPServer:
     """Create the server. `environ`, the transports and `photos_target` (an
     MCP server standing in for PhotoPrism's) are injectable for tests."""
@@ -86,8 +89,33 @@ def build_server(
     elif env.get("NEXTCLOUD_URL") or env.get("NEXTCLOUD_APP_PASSWORD"):
         logger.warning("Nextcloud disabled: set NEXTCLOUD_URL, NEXTCLOUD_USER and NEXTCLOUD_APP_PASSWORD")
 
+    loc_cfg = LocationsConfig.from_env(env)
+    if loc_cfg:
+        try:
+            loc = build_locations(loc_cfg, locations_transport, nominatim_transport)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            # A broken index must not take the other modules down.
+            logger.error("Locations disabled: cannot open %s (%s)", loc_cfg.db_path, exc)
+        else:
+            phonetrack.register(server, loc)
+            enabled.append("locations")
+    elif env.get("PHONETRACK_ROOT"):
+        logger.warning("Locations disabled: PHONETRACK_ROOT needs the NEXTCLOUD_* settings too")
+
     if enabled:
         logger.info("familia-mcp modules enabled: %s", ", ".join(enabled))
     else:
         logger.warning("familia-mcp started with no modules configured (check the env file)")
     return server
+
+
+def build_locations(cfg: LocationsConfig, files_transport: httpx.AsyncBaseTransport | None = None,
+                    nominatim_transport: httpx.AsyncBaseTransport | None = None,
+                    nominatim_interval_s: float = 1.05) -> phonetrack.Locations:
+    index = phonetrack.Index(cfg.db_path)
+    return phonetrack.Locations(
+        cfg,
+        phonetrack.FilesClient(cfg, transport=files_transport),
+        index,
+        phonetrack.Nominatim(cfg, index, transport=nominatim_transport, min_interval_s=nominatim_interval_s),
+    )

@@ -1,7 +1,7 @@
 [project]
 name = "familia-mcp"
-version = "0.3.0"
-description = "familIA home MCP server (Prometheus, Home Assistant, Plex, PhotoPrism, Nextcloud). Runs over stdio, spawned through a restricted SSH key."
+version = "0.4.0"
+description = "familIA home MCP server (Prometheus, Home Assistant, Plex, PhotoPrism, Nextcloud, location history). Runs over stdio, spawned through a restricted SSH key."
 license = "GPL-3.0-only"
 requires-python = ">=3.11"
 # Pinned: mcp 2.x changed its public API (FastMCP -> MCPServer). The proxy on
@@ -10,6 +10,8 @@ dependencies = [
   "mcp==2.3.0",
   "httpx==0.28.1",
   "icalendar==7.3.0",
+  # Offline time zone of a coordinate (locations module); abi3 wheels incl. aarch64.
+  "tzfpy==2.1.2",
 ]
 
 [project.scripts]
