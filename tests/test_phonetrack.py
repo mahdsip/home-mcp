@@ -546,3 +546,227 @@ def test_broken_index_does_not_take_the_server_down(tmp_path):
     tools = run(names())
     os.chmod(ro, 0o700)
     assert "nc_agenda" in tools and not any(n.startswith("loc_") for n in tools)
+
+
+# ---------------------------------------------------------------- photo evidence (fake PhotoPrism MCP)
+
+import json as _json  # noqa: E402
+import math as _math  # noqa: E402
+
+from mcp.server.mcpserver import MCPServer  # noqa: E402
+
+from familia_mcp import photos as ph  # noqa: E402
+from familia_mcp.locphotos import PhotoEvidence  # noqa: E402
+
+PP_PEOPLE = [{"uid": "jc", "name": "Carmen", "media_count": 2}, {"uid": "ji", "name": "Inés", "media_count": 1}]
+
+
+def photo(uid, lat, lng, local, *, people=(), title=None, place="Segovia, Castilla y León, Spain", located=True):
+    return {"uid": uid, "type": "image", "title": title or uid, "taken_at_local": local, "taken_at": local + "Z",
+            "place": {"country": "es", "name": place}, "camera": "Google Pixel 11 Pro",
+            "people": [{"uid": p, "name": next(x["name"] for x in PP_PEOPLE if x["uid"] == p)} for p in people],
+            "_lat": lat, "_lng": lng, "_located": located}
+
+
+PP_LIBRARY = [
+    # 2026-11-08 in Segovia, same day as the GPS fixes; Carmen appears in one
+    photo("s1", 40.951, -4.121, "2026-11-08T11:30:00", people=["jc"], title="Acueducto"),
+    photo("s2", 40.949, -4.119, "2026-11-08T12:10:00", title="Catedral"),
+    # 2025-03-01: photos but no GPS file at all (Inés)
+    photo("s3", 40.950, -4.120, "2025-03-01T17:05:00", people=["ji"], title="Alcázar"),
+    # inside the search circle, outside Segovia's polygon (rect ends at lon -4.20): must not count
+    photo("x1", 40.950, -4.215, "2026-11-20T10:00:00", place="La Losa, Castilla y León, Spain"),
+    # location stripped from metadata: cannot be confirmed
+    photo("x2", 40.950, -4.120, "2026-11-21T10:00:00", located=False),
+    # Madrid, 2026-11-09: a day without GPS where the user took pictures
+    photo("m1", 40.4168, -3.7038, "2025-03-02T09:00:00", place="Madrid, Comunidad de Madrid, Spain"),
+    # Los Angeles: 22:00 local on 2014-09-09 (05:00 UTC on the 10th)
+    photo("la1", 34.05, -118.24, "2014-09-09T22:00:00", place="Los Angeles, California, United States"),
+]
+
+
+def _km(lat1, lng1, lat2, lng2):
+    p = _math.pi / 180
+    a = (_math.sin((lat2 - lat1) * p / 2) ** 2
+         + _math.cos(lat1 * p) * _math.cos(lat2 * p) * _math.sin((lng2 - lng1) * p / 2) ** 2)
+    return 12742 * _math.asin(_math.sqrt(a))
+
+
+def fake_photoprism(calls):
+    srv = MCPServer(name="photoprism")
+
+    @srv.tool(name="list_people")
+    def list_people(query: str = "", limit: int = 20, offset: int = 0) -> dict:
+        calls.append(("list_people", {}))
+        items = PP_PEOPLE[offset: offset + limit]
+        return {"items": items, "total": len(PP_PEOPLE), "limit": limit, "offset": offset,
+                "truncated": offset + limit < len(PP_PEOPLE)}
+
+    @srv.tool(name="search_media")
+    def search_media(query: str = "", person: str = "", taken_after: str = "", taken_before: str = "",
+                     order: str = "newest", limit: int = 20, offset: int = 0, detail: str = "brief") -> dict:
+        calls.append(("search_media", dict(query=query, person=person, taken_after=taken_after,
+                                           taken_before=taken_before, offset=offset)))
+        f = dict(t.split(":", 1) for t in query.split() if ":" in t)
+        found = []
+        for m in sorted(PP_LIBRARY, key=lambda m: m["taken_at_local"], reverse=order != "oldest"):
+            d = m["taken_at_local"][:10]
+            if person and person not in [p["uid"] for p in m["people"]]:
+                continue
+            if taken_after and d < taken_after or taken_before and d >= taken_before:
+                continue
+            if "dist" in f and _km(float(f["lat"]), float(f["lng"]), m["_lat"], m["_lng"]) > float(f["dist"]):
+                continue
+            item = {k: v for k, v in m.items() if not k.startswith("_")}
+            if detail != "full":
+                item.pop("people"); item.pop("camera")
+            found.append(item)
+        chunk = found[offset: offset + limit]
+        out = {"items": chunk, "limit": limit, "offset": offset}
+        if offset + limit < len(found):
+            out["next_offset"] = offset + limit
+        return out
+
+    @srv.tool(name="get_media")
+    def get_media(uid: str) -> dict:
+        calls.append(("get_media", uid))
+        m = next(x for x in PP_LIBRARY if x["uid"] == uid)
+        item = {k: v for k, v in m.items() if not k.startswith("_")}
+        if m["_located"]:
+            item["location"] = {"lat": m["_lat"], "lng": m["_lng"], "altitude": 1000}
+        return item
+
+    return srv
+
+
+@pytest.fixture
+def pp_calls():
+    return []
+
+
+@pytest.fixture
+def withphotos(synced, pp_calls):
+    loc, files, nom = synced
+    loc.photos = PhotoEvidence(ph.server_connect(fake_photoprism(pp_calls)))
+    return loc
+
+
+def _no_coordinates(obj):
+    text = _json.dumps(obj)
+    return '"lat"' not in text and '"lng"' not in text and "40.95" not in text
+
+
+def test_photo_day_alongside_gps(withphotos, pp_calls):
+    r = run(withphotos.was_i_at("Segovia", "2026-11-08", None, None))
+    assert r["found"] and r["visits"][0]["evidence"] == "gps"
+    day = r["photo_days"][0]
+    assert (day["date"], day["evidence"], day["first_time"], day["last_time"]) == ("2026-11-08", "photo", "11:30", "12:10")
+    assert day["gps_that_day"] is True and day["people"] == ["Carmen"] and day["photos_nearby"] == 2
+    assert day["place"] == "Segovia, Castilla y León" and day["examples"] == ["Acueducto", "Catedral"]
+    q = [c[1] for c in pp_calls if c[0] == "search_media"][0]
+    assert q["query"].startswith("lat:") and "dist:" in q["query"]
+    assert (q["taken_after"], q["taken_before"]) == ("2026-11-07", "2026-11-10")   # widened, then filtered
+    assert _no_coordinates(r)
+
+
+def test_photos_only_day_counts_as_found(withphotos):
+    r = run(withphotos.was_i_at("Segovia", "2025-03-01", None, None))
+    assert r["found"] and r["visits"] == []
+    assert r["photo_days"][0]["gps_that_day"] is False and r["days_without_gps_data"] == ["2025-03-01"]
+
+
+def test_photo_outside_the_place_or_without_position_is_ignored(withphotos, pp_calls):
+    r = run(withphotos.was_i_at("Segovia", None, "2026-11-20", "2026-11-21"))
+    assert not r["found"] and "photo_days" not in r
+    assert ("get_media", "x1") in pp_calls and ("get_media", "x2") in pp_calls   # both were checked
+
+
+def test_all_time_lists_every_photo_day(withphotos):
+    r = run(withphotos.was_i_at("Segovia", None, None, None))
+    assert [d["date"] for d in r["photo_days"]] == ["2025-03-01", "2026-11-08"]
+
+
+def test_person_uses_photos_only(withphotos):
+    r = run(withphotos.was_i_at("Segovia", None, None, None, person="ines"))
+    assert r["person"] == "Inés" and r["visits"] == []                  # GPS is the phone owner's
+    assert [d["date"] for d in r["photo_days"]] == ["2025-03-01"]
+    r = run(withphotos.was_i_at("Segovia", "2026-11-08", None, None, person="Carmen"))
+    assert r["found"] and r["photo_days"][0]["people"] == ["Carmen"]
+    with pytest.raises(ToolError, match="Unknown person"):
+        run(withphotos.was_i_at("Segovia", None, None, None, person="Pepe"))
+
+
+def test_person_needs_photo_library(synced):
+    loc, _, _ = synced
+    with pytest.raises(ToolError, match="photo library"):
+        run(loc.was_i_at("Segovia", None, None, None, person="Carmen"))
+
+
+def test_lookups_are_capped(withphotos, pp_calls, monkeypatch):
+    import familia_mcp.locphotos as lp
+    monkeypatch.setattr(lp, "MAX_LOOKUPS", 1)
+    r = run(withphotos.was_i_at("Segovia", None, None, None))
+    assert sum(1 for c in pp_calls if c[0] == "get_media") == 1
+    assert "photos_note" in r
+
+
+def test_where_was_i_with_photos_and_no_gps(withphotos):
+    r = run(withphotos.where_was_i("2025-03-01"))
+    assert r["gps_data"] is False and "photos" in r["hint"]
+    p = r["photos"]
+    assert (p["count"], p["first_time"], p["last_time"], p["people"]) == (1, "17:05", "17:05", ["Inés"])
+    assert p["places"] == ["Segovia, Castilla y León"] and _no_coordinates(r)
+    r = run(withphotos.where_was_i("2026-11-08"))
+    assert r["gps_data"] and r["photos"]["count"] == 2
+
+
+def test_trip_summary_photos_use_local_day(withphotos):
+    s = run(withphotos.trip_summary("California"))
+    assert s["photos"]["by_day"] == {"2014-09-09": 1}
+    assert s["photos"]["places"] == ["Los Angeles, California"]
+    assert "first_time" not in s["photos"]                                 # meaningless across days
+
+
+def test_photoprism_down_keeps_gps_answer(synced):
+    loc, _, _ = synced
+
+    def broken():
+        raise ToolError("PhotoPrism is not reachable (ConnectError).")
+
+    class Down:
+        def __call__(self):
+            return self
+
+        async def __aenter__(self):
+            broken()
+
+        async def __aexit__(self, *a):
+            return False
+
+    loc.photos = PhotoEvidence(Down())
+    r = run(loc.was_i_at("Segovia", "2026-11-08", None, None))
+    assert r["found"] and r["visits"] and "could not be checked" in r["photos_note"]
+    r = run(loc.where_was_i("2026-11-08"))
+    assert r["gps_data"] and "photos_note" in r
+
+
+def test_person_param_through_mcp(tmp_path, pp_calls):
+    files, nom = FakeFiles(TREE), FakeNominatim()
+    env = {"FAMILIA_MCP_ENV_FILE": str(tmp_path / "none.env"), "NEXTCLOUD_URL": "https://nc.example",
+           "NEXTCLOUD_USER": USER, "NEXTCLOUD_APP_PASSWORD": "p", "PHONETRACK_ROOT": "Maps",
+           "PHONETRACK_DB": str(tmp_path / "loc.sqlite"), "PHOTOPRISM_URL": "http://pp", "PHOTOPRISM_TOKEN": "t"}
+    cfg = LocationsConfig.from_env(env)
+    run(build_locations(cfg, httpx.MockTransport(files.handler), httpx.MockTransport(nom.handler)).sync())
+    server = build_server(env, nextcloud_transport=httpx.MockTransport(lambda r: httpx.Response(404)),
+                          locations_transport=httpx.MockTransport(files.handler),
+                          nominatim_transport=httpx.MockTransport(nom.handler),
+                          photos_target=fake_photoprism(pp_calls))
+
+    async def go():
+        async with Client(server) as client:
+            tools = {t.name: t for t in (await client.list_tools()).tools}
+            assert "person" in tools["loc_was_i_at"].input_schema["properties"]
+            return structured(await client.call_tool("loc_was_i_at", {"place": "Segovia", "person": "Inés"}))
+
+    r = run(go())
+    assert r["person"] == "Inés" and [d["date"] for d in r["photo_days"]] == ["2025-03-01"]

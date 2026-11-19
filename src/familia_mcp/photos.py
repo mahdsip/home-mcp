@@ -6,13 +6,14 @@
 PhotoPrism ships its own read-only MCP server (/api/v1/mcp). This module is a
 thin client of it: it resolves spoken names (people, albums) to PhotoPrism
 UIDs, pages through results and condenses them into short summaries a voice
-answer can use (counts, date range, places, a few examples). It never sees
-coordinates (no `places` scope) and cannot change anything: the token's
-scope includes `read`, and the PhotoPrism MCP tools are read-only anyway.
+answer can use (counts, date range, places, a few examples). It never returns
+coordinates and cannot change anything: the token's scope includes `read`, and
+the PhotoPrism MCP tools are read-only anyway.
 
 Token: a PhotoPrism app password with scope
-  "mcp read photos albums people labels"
-(photoprism auth add -n familia-mcp -s "<scope>" -e 31536000 <user>).
+  "albums calendar labels mcp people photos places read"
+(photoprism auth add -n home-mcp -s "<scope>" -e -1 <user>). `places` is used
+by the locations module (locphotos.py) to check where a photo was taken.
 """
 
 from __future__ import annotations

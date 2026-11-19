@@ -55,6 +55,7 @@ from mcp_types import ToolAnnotations
 from pydantic import Field
 
 from . import __version__, tracks
+from .locphotos import PhotoEvidence, is_person_error
 from .config import LocationsConfig
 from .geo import BBox, Shape, haversine_m
 from .matching import normalize, resolve, words
@@ -485,11 +486,12 @@ class SyncStats:
 
 class Locations:
     def __init__(self, cfg: LocationsConfig, files: FilesClient, index: Index, geocoder: Nominatim,
-                 now: Any = None):
+                 now: Any = None, photos: PhotoEvidence | None = None):
         self.cfg = cfg
         self.files = files
         self.index = index
         self.geo = geocoder
+        self.photos = photos  # PhotoPrism evidence; None when the photos module is not configured
         self._now = now or time.time
         self._sync_lock = asyncio.Lock()
         self._background: asyncio.Task | None = None
@@ -717,7 +719,12 @@ class Locations:
 
     # ------------------------------------------------ tools
 
-    async def was_i_at(self, place: str, day: str | None, start: str | None, end: str | None) -> dict[str, Any]:
+    async def was_i_at(self, place: str, day: str | None, start: str | None, end: str | None,
+                       person: str | None = None) -> dict[str, Any]:
+        deadline = self._deadline()
+        person = (person or "").strip() or None
+        if person and not self.photos:
+            raise ToolError("Asking about another person needs the photo library (PhotoPrism), which is not configured.")
         d = parse_day(day, "date")
         s, e = (d, d) if d else (parse_day(start, "start"), parse_day(end, "end"))
         if s and e and e < s:
@@ -731,8 +738,9 @@ class Locations:
             timed_where, timed_args = "p.ts IS NOT NULL AND p.local_date BETWEEN ? AND ?", (lo, hi)
             undated_where = "p.ts IS NULL AND f.date_from <= ? AND f.date_to >= ?"
             undated_args = (hi, lo)
-        timed = self._points(timed_where, timed_args, cats)
-        undated = self._points(undated_where, undated_args, cats)
+        # The GPS history is the phone owner's: for another person only photos count.
+        timed = [] if person else self._points(timed_where, timed_args, cats)
+        undated = [] if person else self._points(undated_where, undated_args, cats)
         candidates = await self.resolve_place(place)
         # Ambiguous names ("Gran Vía"): prefer the candidate the user actually went near.
         chosen, hits_t, hits_u = candidates[0], [], []
@@ -742,18 +750,33 @@ class Locations:
             if ht or hu:
                 chosen, hits_t, hits_u = cand, ht, hu
                 break
-        out: dict[str, Any] = {"place": chosen.name, "place_kind": chosen.kind,
-                               "period": self._period(s, e)}
+        out: dict[str, Any] = {}
         visits = self._visits_by_day(hits_t)
-        out["found"] = bool(visits)
+        photo_days: list[dict[str, Any]] = []
+        if self.photos:
+            # GPS near a candidate decided the place; otherwise let the photos
+            # pick among the top candidates (photo-only days, other people).
+            first: dict[str, Any] | None = None
+            for cand in ([chosen] if hits_t or hits_u else candidates[:3]):
+                ph = await self._photo_evidence(cand, s, e, person, deadline, out)
+                if ph is None:
+                    break  # library unreachable; noted in out
+                first = first or ph
+                if ph.get("days"):
+                    chosen, first = cand, ph
+                    break
+            if first is not None:
+                photo_days = self._merge_photo_days(first, {v["date"] for v in visits}, out)
+        out.update({"place": chosen.name, "place_kind": chosen.kind, "period": self._period(s, e)})
         out["visits"] = visits[:MAX_RESULTS]
         if len(visits) > MAX_RESULTS:
             out["more_days"] = len(visits) - MAX_RESULTS
-        undated_out = self._undated_hits(hits_u)
-        wp = self._waypoint_hits(chosen, s, e)
+        out["found"] = bool(visits or photo_days)
+        undated_out = [] if person else self._undated_hits(hits_u)
+        wp = [] if person else self._waypoint_hits(chosen, s, e)
         if undated_out or wp:
             out["other_evidence"] = (undated_out + wp)[:MAX_RESULTS]
-        if s and e and (e - s).days <= 62:
+        if s and e and (e - s).days <= 62 and not person:
             have = {r[0] for r in self.index.db.execute(
                 "SELECT DISTINCT p.local_date FROM points p JOIN files f ON f.id=p.file_id "
                 "WHERE f.category IN ('daily','trip') AND p.ts IS NOT NULL AND p.local_date BETWEEN ? AND ?",
@@ -763,13 +786,53 @@ class Locations:
             if missing:
                 out["days_without_gps_data"] = _day_ranges(missing)
         if not out["found"]:
-            out["hint"] = ("No GPS fix there in the period. 'days_without_gps_data' are days with no data at all "
-                           "(the phone did not record), which is not the same as not having been there.")
+            out["hint"] = ("No photo taken there in the period." if person else
+                           "No GPS fix or photo there in the period. 'days_without_gps_data' are days with no GPS "
+                           "data at all (the phone did not record), which is not the same as not having been there.")
         if len(candidates) > 1 and chosen is candidates[0] and not out["found"]:
             out["other_places_with_that_name"] = list(dict.fromkeys(
                 c.name for c in candidates[1:] if c.name != chosen.name))[:3]
         out.update(note)
         return out
+
+    async def _photo_evidence(self, place: Place, s: date | None, e: date | None, person: str | None,
+                              deadline: float, out: dict[str, Any]) -> dict[str, Any] | None:
+        """PhotoPrism evidence for one place; None (noted in out) when the library fails,
+        which never fails the answer."""
+        try:
+            return await self.photos.near(place, s, e, person, deadline)  # type: ignore[union-attr]
+        except ToolError as exc:
+            if person and is_person_error(exc):
+                raise
+            logger.warning("photo evidence failed: %s", exc)
+            out["photos_note"] = "The photo library could not be checked; the answer uses GPS only."
+            return None
+
+    @staticmethod
+    def _merge_photo_days(ph: dict[str, Any], gps_days: set[str], out: dict[str, Any]) -> list[dict[str, Any]]:
+        if ph.get("person"):
+            out["person"] = ph["person"]
+        days = ph.get("days") or []
+        for day in days:
+            day["gps_that_day"] = day["date"] in gps_days
+        if days:
+            out["photo_days"] = days[:MAX_RESULTS]
+        if ph.get("truncated") or ph.get("unchecked_days"):
+            out["photos_note"] = "Too many photos to check them all; more days may exist."
+        return days
+
+    async def _photo_summary(self, out: dict[str, Any], query: Any) -> None:
+        """Photos of a day / trip into out["photos"] (only when there are some)."""
+        if query is None:
+            return
+        try:
+            ph = await query
+        except ToolError as exc:
+            logger.warning("photo summary failed: %s", exc)
+            out["photos_note"] = "The photo library could not be checked."
+            return
+        if ph.get("count"):
+            out["photos"] = ph
 
     @staticmethod
     def _period(s: date | None, e: date | None) -> str:
@@ -862,9 +925,11 @@ class Locations:
         trips = self._trips_on(d)
         if trips:
             out["trips_that_day"] = trips
+        await self._photo_summary(out, self.photos.on_day(d, deadline) if self.photos else None)
         if not pts:
             out["gps_data"] = False
-            out["hint"] = "The phone recorded nothing that day."
+            out["hint"] = ("The phone recorded no GPS that day; 'photos' says where pictures were taken."
+                           if out.get("photos") else "The phone recorded nothing that day and there are no photos.")
             out.update(note)
             return out
         out["gps_data"] = True
@@ -994,6 +1059,9 @@ class Locations:
             (r["path"],))]
         if marked:
             out["marked_places"] = marked[:60]
+        if self.photos and r["date_from"] and r["date_to"]:
+            await self._photo_summary(out, self.photos.in_range(date.fromisoformat(r["date_from"]),
+                                                                date.fromisoformat(r["date_to"]), deadline))
         # localities along the trip: fixes/vertices at least ~10 km apart
         pts = self.index.db.execute(
             "SELECT p.lon, p.lat FROM points p JOIN files f ON f.id=p.file_id WHERE f.folder=? "
@@ -1137,11 +1205,13 @@ def register(server: MCPServer, loc: Locations) -> None:
     @server.tool(
         name="loc_was_i_at",
         description=(
-            "Whether the user's phone location history shows them at a place (city, town, street, landmark) on a "
-            "day, in a period, or ever. Use for '¿pasé por la Gran Vía el 10 de noviembre?', '¿estuve en Segovia el "
-            "8?', '¿cuándo estuve en Oviedo?'. Add the town to streets ('Gran Vía, Madrid'). Times are local to "
-            "where the user was. Report the 'evidence': only 'gps'/'gps_path' prove presence; 'planned_route' and "
-            "'marked_place' do not."
+            "Whether the user's phone location history and the family photo library show them at a place (city, "
+            "town, street, landmark) on a day, in a period, or ever. Use for '¿pasé por la Gran Vía el 10 de "
+            "noviembre?', '¿estuve en Segovia el 8?', '¿cuándo estuve en Oviedo?'. Add the town to streets ('Gran "
+            "Vía, Madrid'). Times are local to where the user was. Report the 'evidence': 'gps'/'gps_path' (visits) "
+            "and 'photo' (photo_days, a picture taken there; lists who appears in them) show presence; "
+            "'planned_route' and 'marked_place' do not. With 'person' ('¿estuvo Carmen en Llanes?') only photos "
+            "where that recognised person appears count."
         ),
         annotations=_READ_ONLY,
     )
@@ -1150,13 +1220,16 @@ def register(server: MCPServer, loc: Locations) -> None:
         date: Annotated[str | None, Field(description=_DATE_DOC, max_length=10)] = None,
         start: Annotated[str | None, Field(description="First day of a period (YYYY-MM-DD).", max_length=10)] = None,
         end: Annotated[str | None, Field(description="Last day of a period (YYYY-MM-DD).", max_length=10)] = None,
+        person: Annotated[str | None, Field(description="Someone else, as recognised in the photo library "
+                                            "(fuzzy-matched). Omit for the user.", max_length=60)] = None,
     ) -> dict[str, Any]:
-        return await loc.was_i_at(place, date, start, end)
+        return await loc.was_i_at(place, date, start, end, person)
 
     @server.tool(
         name="loc_where_was_i",
         description=("Where the user was on a given day from the phone location history: localities in order, "
-                     "longer stops with times, and any trip that day. Use for '¿dónde estuve el sábado?'."),
+                     "longer stops with times, any trip that day, and the photos taken that day (count, times, "
+                     "places, people), also on days without GPS. Use for '¿dónde estuve el sábado?'."),
         annotations=_READ_ONLY,
     )
     async def loc_where_was_i(
@@ -1179,7 +1252,8 @@ def register(server: MCPServer, loc: Locations) -> None:
 
     @server.tool(
         name="loc_trip_summary",
-        description=("Details of one saved trip: dates, localities along the way, places marked, files. "
+        description=("Details of one saved trip: dates, localities along the way, places marked, files, and the "
+                     "photos taken during it (per day, places, people). "
                      "Use for '¿por dónde pasamos en el viaje a Galicia?'."),
         annotations=_READ_ONLY,
     )

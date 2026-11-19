@@ -16,6 +16,7 @@ from mcp.server.mcpserver import MCPServer
 from . import __version__, homeassistant, nextcloud, phonetrack, photos, plex, prometheus
 from .config import (HomeAssistantConfig, LocationsConfig, NextcloudConfig, PhotosConfig, PlexConfig,
                      PrometheusConfig, resolve_env)
+from .locphotos import PhotoEvidence
 
 logger = logging.getLogger("familia_mcp")
 
@@ -72,8 +73,10 @@ def build_server(
         logger.warning("Plex disabled: set both PLEX_URL and PLEX_TOKEN")
 
     photos_cfg = PhotosConfig.from_env(env)
+    photos_connect = None  # shared with the locations module (photo evidence)
     if photos_cfg:
         connect = photos.server_connect(photos_target) if photos_target is not None else photos.http_connect(photos_cfg)
+        photos_connect = connect
         photos.register(server, photos.Photos(connect))
         enabled.append("photos")
     elif env.get("PHOTOPRISM_URL") or env.get("PHOTOPRISM_TOKEN"):
@@ -92,7 +95,7 @@ def build_server(
     loc_cfg = LocationsConfig.from_env(env)
     if loc_cfg:
         try:
-            loc = build_locations(loc_cfg, locations_transport, nominatim_transport)
+            loc = build_locations(loc_cfg, locations_transport, nominatim_transport, photos_connect=photos_connect)
         except (OSError, ValueError, sqlite3.Error) as exc:
             # A broken index must not take the other modules down.
             logger.error("Locations disabled: cannot open %s (%s)", loc_cfg.db_path, exc)
@@ -111,11 +114,12 @@ def build_server(
 
 def build_locations(cfg: LocationsConfig, files_transport: httpx.AsyncBaseTransport | None = None,
                     nominatim_transport: httpx.AsyncBaseTransport | None = None,
-                    nominatim_interval_s: float = 1.05) -> phonetrack.Locations:
+                    nominatim_interval_s: float = 1.05, photos_connect: Any = None) -> phonetrack.Locations:
     index = phonetrack.Index(cfg.db_path)
     return phonetrack.Locations(
         cfg,
         phonetrack.FilesClient(cfg, transport=files_transport),
         index,
         phonetrack.Nominatim(cfg, index, transport=nominatim_transport, min_interval_s=nominatim_interval_s),
+        photos=PhotoEvidence(photos_connect) if photos_connect is not None else None,
     )

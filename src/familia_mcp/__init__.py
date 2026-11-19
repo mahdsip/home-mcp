@@ -6,4 +6,4 @@ location history). A module is enabled only when its configuration is present, s
 the same binary serves whatever the household has.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

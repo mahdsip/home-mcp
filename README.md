@@ -37,7 +37,9 @@ services directly; the proxy runs the tool here and sends back the result.
 - **Plex**: the owner token can do anything on the server, so the client only issues `GET` requests to a fixed list
   of paths. "Continue watching" for Plex Home users uses each user's own token and never falls back to the owner's.
 - **Photos**: a thin client of PhotoPrism's built-in read-only MCP endpoint (`/api/v1/mcp`). Use an app password
-  with scope `mcp read photos albums people labels`; without `places` no coordinates are ever returned.
+  with scope `mcp read photos albums people labels calendar places`. `places` lets the locations module read a
+  photo's exact position (`get_media`) to check it against a place; no photo coordinates are ever returned to
+  the model, by either module. Without `places`, photo evidence simply finds nothing.
 - **Nextcloud**: CalDAV/CardDAV with a dedicated app password (Nextcloud cannot scope those, so the client is the
   boundary): only `PROPFIND`, `REPORT` and `PUT`, only below the user's calendar and address book homes, and every
   `PUT` is conditional: `If-None-Match: *` to create, `If-Match: <etag>` to mark a task done, so a change made
@@ -121,6 +123,13 @@ Nextcloud folder (`PHONETRACK_ROOT`, e.g. `Maps`):
 - **Evidence.** Each answer says what it rests on: `gps`, `gps_path` (between two fixes), `track`,
   `planned_route` or `marked_place`; only the first two prove presence. Days without any fix are reported as
   `days_without_gps_data`, distinct from "not there".
+- **Photos** (when the Photos module is configured, same token): `loc_was_i_at` adds `photo_days` (evidence
+  `photo`): PhotoPrism's radius search (`lat:`/`lng:`/`dist:`) finds candidates and `get_media` confirms that a
+  photo was taken inside the place (same geometry, 50 m tolerance); at most 40 lookups per call. Each day says
+  who appears and whether there was GPS that day. With `person`, only photos where that recognised person
+  appears count (the GPS is the phone owner's). `loc_where_was_i` and `loc_trip_summary` add a `photos` summary
+  (count, times, places, people, per day), also for days without GPS. Days are the photo's local day. If
+  PhotoPrism is down the answer still comes from GPS, with a `photos_note`.
 - **Privacy.** Nominatim (OpenStreetMap) turns names into shapes and, for day and trip summaries, coordinates
   into names, so the public instance sees those coordinates. Results are cached forever; requests are limited
   to one per second with an identifying User-Agent, per its usage policy. Set `NOMINATIM_URL` to a
