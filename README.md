@@ -12,6 +12,7 @@ The Python package and the installed command are still named `familia-mcp` (`fam
 | Home Assistant | `ha_list_devices`, `ha_device_state`, `ha_device_history`, `ha_control` | lights and plugs in an allowlist |
 | Plex | `plex_search`, `plex_recently_added`, `plex_continue_watching`, `plex_watch_history`, `plex_now_playing` | read-only |
 | Photos (PhotoPrism) | `photos_search`, `photos_albums`, `photos_people`, `photos_on_this_day` | read-only |
+| Health (Open Wearables) | `health_activity`, `health_sleep`, `health_body`, `health_workouts`, `health_recovery` | read-only |
 | Nextcloud | `nc_calendars`, `nc_agenda`, `nc_tasks`, `nc_add_task`, `nc_complete_task`, `nc_create_event`, `nc_find_contact`, `nc_add_contact` | read + create; events and contacts after a spoken "yes" |
 | Locations | `loc_was_i_at`, `loc_where_was_i`, `loc_list_trips`, `loc_trip_summary`, `loc_runs_near`, `loc_chargers_near` | read-only (Nextcloud files + Nominatim) |
 
@@ -22,7 +23,7 @@ restricted key whose forced command is the server
 (`restrict,command="/opt/familia-mcp/venv/bin/familia-mcp"`). Nothing listens on the LAN.
 
 ```
-voice (OVOS) -> familIA proxy -- SSH, forced command --> familia-mcp (this repo) -> Prometheus / HA / Plex / PhotoPrism
+voice (OVOS) -> familIA proxy -- SSH, forced command --> familia-mcp (this repo) -> Prometheus / HA / Plex / PhotoPrism / Open Wearables
 ```
 
 The tool calls themselves come from the familIA Lambda as "return of control": the model never reaches the home
@@ -50,6 +51,11 @@ services directly; the proxy runs the tool here and sends back the result.
 - **Locations**: the same app password, but the files client only sends `PROPFIND` and `GET`, only below
   `PHONETRACK_ROOT` (paths with `..` are refused), files over 25 MB are skipped. The index is mode 600 (umask 077
   covers SQLite's `-wal`/`-shm` files). Coordinates only leave the house towards Nominatim (see below).
+- **Health**: Open Wearables API keys have no scopes and can write, so the client only issues `GET` requests to a
+  fixed list of paths (users, activity/sleep/body summaries, workouts, daily time series). Tool results go to the
+  language model, so every tool returns summaries (daily rows up to a month, weekly averages beyond, totals and
+  trends), never raw samples. Resting heart rate, HRV and the weight trend come from the daily time series
+  (`resolution=1day`): Open Wearables' recovery summary only carries WHOOP data.
 - Tokens live only in `/etc/familia/mcp.env` on the MCP host (mode 600, owned by the service user).
 
 ## Install / upgrade (Raspberry Pi OS, Python 3.11+)
@@ -89,6 +95,7 @@ see `deploy/mcp.env.example`.
 | Plex | `PLEX_URL`, `PLEX_TOKEN` | `PLEX_USER_TOKENS=Kids=<token>;...`, `PLEX_TIMEOUT_S` |
 | Photos | `PHOTOPRISM_URL`, `PHOTOPRISM_TOKEN` | `PHOTOPRISM_TIMEOUT_S` |
 | Nextcloud | `NEXTCLOUD_URL`, `NEXTCLOUD_USER`, `NEXTCLOUD_APP_PASSWORD` | `NEXTCLOUD_CERT_FILE`, `NEXTCLOUD_CALENDARS`, `NEXTCLOUD_DEFAULT_CALENDAR`, `NEXTCLOUD_DEFAULT_TASKLIST`, `NEXTCLOUD_ADDRESSBOOK`, `NEXTCLOUD_TIMEZONE` |
+| Health | `OPENWEARABLES_URL`, `OPENWEARABLES_API_KEY` | `OPENWEARABLES_USERS=Name=email;...` (needed with more than one user), `OPENWEARABLES_TIMEZONE`, `OPENWEARABLES_TIMEOUT_S` |
 | Locations | `PHONETRACK_ROOT` + the Nextcloud settings | `PHONETRACK_DAILY_FOLDER`, `PHONETRACK_SPORT_FOLDER`, `PHONETRACK_CHARGERS_FOLDER`, `PHONETRACK_DB`, `PHONETRACK_SYNC_INTERVAL_S`, `PHONETRACK_SYNC_BUDGET_S`, `NOMINATIM_URL`, `NOMINATIM_EMAIL`, `NOMINATIM_LANGUAGE` |
 
 ### Location history

@@ -95,7 +95,8 @@ ALLOWED = {"HA_TOKEN", "PLEX_URL", "PLEX_TOKEN", "PLEX_USER_TOKENS", "PHOTOPRISM
            "NEXTCLOUD_CALENDARS", "NEXTCLOUD_DEFAULT_CALENDAR", "NEXTCLOUD_DEFAULT_TASKLIST",
            "NEXTCLOUD_ADDRESSBOOK", "NEXTCLOUD_TIMEZONE",
            "PHONETRACK_ROOT", "PHONETRACK_DAILY_FOLDER", "PHONETRACK_SPORT_FOLDER", "PHONETRACK_CHARGERS_FOLDER",
-           "NOMINATIM_EMAIL", "NOMINATIM_LANGUAGE"}
+           "NOMINATIM_EMAIL", "NOMINATIM_LANGUAGE",
+           "OPENWEARABLES_URL", "OPENWEARABLES_API_KEY", "OPENWEARABLES_USERS", "OPENWEARABLES_TIMEZONE"}
 new = load_env_file(sys.argv[1])
 # Calendar names may contain spaces and accents; everything else is a token or URL.
 FREE_TEXT = {"NEXTCLOUD_CALENDARS", "NEXTCLOUD_DEFAULT_CALENDAR", "NEXTCLOUD_DEFAULT_TASKLIST"}
@@ -206,6 +207,11 @@ async def main():
             r = await c.call_tool("loc_list_trips", {})
             out = payload(r)
             print("locations:", "ERROR " + str(out) if r.is_error else f"{out.get('count')} trips indexed")
+        if "health_activity" in names:
+            r = await c.call_tool("health_activity", {"period": "7d"})
+            out = payload(r)
+            print("health:", "ERROR " + str(out) if r.is_error else
+                  f"{out.get('person')}: {out.get('days_with_data', 0)} days with activity in the last 7")
         if "photos_people" in names:
             r = await c.call_tool("photos_people", {})
             out = payload(r)

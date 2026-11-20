@@ -13,8 +13,8 @@ from typing import Any
 import httpx
 from mcp.server.mcpserver import MCPServer
 
-from . import __version__, homeassistant, nextcloud, phonetrack, photos, plex, prometheus
-from .config import (HomeAssistantConfig, LocationsConfig, NextcloudConfig, PhotosConfig, PlexConfig,
+from . import __version__, health, homeassistant, nextcloud, phonetrack, photos, plex, prometheus
+from .config import (HealthConfig, HomeAssistantConfig, LocationsConfig, NextcloudConfig, PhotosConfig, PlexConfig,
                      PrometheusConfig, resolve_env)
 from .locphotos import PhotoEvidence
 
@@ -37,6 +37,8 @@ def build_server(
     nextcloud_now: Any = None,
     locations_transport: httpx.AsyncBaseTransport | None = None,
     nominatim_transport: httpx.AsyncBaseTransport | None = None,
+    health_transport: httpx.AsyncBaseTransport | None = None,
+    health_today: Any = None,
 ) -> MCPServer:
     """Create the server. `environ`, the transports and `photos_target` (an
     MCP server standing in for PhotoPrism's) are injectable for tests."""
@@ -104,6 +106,17 @@ def build_server(
             enabled.append("locations")
     elif env.get("PHONETRACK_ROOT"):
         logger.warning("Locations disabled: PHONETRACK_ROOT needs the NEXTCLOUD_* settings too")
+
+    health_cfg = HealthConfig.from_env(env)
+    if health_cfg:
+        health.register(
+            server,
+            health.Health(health.OpenWearablesClient(health_cfg, transport=health_transport), health_cfg,
+                          today=health_today),
+        )
+        enabled.append("health")
+    elif env.get("OPENWEARABLES_URL") or env.get("OPENWEARABLES_API_KEY"):
+        logger.warning("Health disabled: set both OPENWEARABLES_URL and OPENWEARABLES_API_KEY")
 
     if enabled:
         logger.info("familia-mcp modules enabled: %s", ", ".join(enabled))

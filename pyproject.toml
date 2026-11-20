@@ -1,6 +1,6 @@
 [project]
 name = "familia-mcp"
-version = "0.5.0"
+version = "0.6.0"
 description = "familIA home MCP server (Prometheus, Home Assistant, Plex, PhotoPrism, Nextcloud, location history). Runs over stdio, spawned through a restricted SSH key."
 license = "GPL-3.0-only"
 requires-python = ">=3.11"

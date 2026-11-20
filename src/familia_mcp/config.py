@@ -279,6 +279,40 @@ class LocationsConfig:
         )
 
 
+_EMAIL_RE = re.compile(r"^[^@\s;=]+@[^@\s;=]+$")
+
+
+@dataclass(frozen=True)
+class HealthConfig:
+    """Open Wearables REST API (self-hosted wearable data)."""
+
+    url: str
+    api_key: str
+    people: dict[str, str]   # spoken name -> Open Wearables user email; empty = the only user
+    timezone: str
+    timeout_s: float = 10.0
+
+    @classmethod
+    def from_env(cls, env: dict[str, str]) -> "HealthConfig | None":
+        url = (env.get("OPENWEARABLES_URL") or "").strip().rstrip("/")
+        key = (env.get("OPENWEARABLES_API_KEY") or "").strip()
+        if not url or not key:
+            return None
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("OPENWEARABLES_URL must start with http:// or https://")
+        people = _parse_named_tokens(env.get("OPENWEARABLES_USERS", ""), "OPENWEARABLES_USERS")
+        bad = [n for n, e in people.items() if not _EMAIL_RE.match(e)]
+        if bad:
+            raise ValueError(f"OPENWEARABLES_USERS needs 'Name=email': check {', '.join(bad)}")
+        return cls(
+            url=url,
+            api_key=key,
+            people=people,
+            timezone=(env.get("OPENWEARABLES_TIMEZONE") or "").strip() or host_timezone(),
+            timeout_s=float(env.get("OPENWEARABLES_TIMEOUT_S") or 10.0),
+        )
+
+
 DEFAULT_HA_ALLOWLIST = "/etc/familia/ha_allowlist.json"
 
 
